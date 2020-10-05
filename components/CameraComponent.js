@@ -1,212 +1,497 @@
-import React, { useState, useEffect } from 'react'
-import { Text, View, TouchableOpacity, StyleSheet } from 'react-native'
+import React, {Component} from 'react';
+import { Permissions } from 'expo';
+import {
+  Alert,
+  StyleSheet,
+  Text,
+  View,
+  TouchableOpacity,
+  Slider,
+  Platform
+} from 'react-native';
+import GalleryScreen from '../screens/GalleryScreen';
+import isIPhoneX from 'react-native-is-iphonex';
 import { DeviceMotion } from 'expo-sensors'
 import { Camera } from 'expo-camera'
 import * as FaceDetector from 'expo-face-detector'
+import Constants from 'expo-constants'
+import * as FileSystem from 'expo-file-system';
+import { BarCodeScanner } from 'expo-barcode-scanner';
 
-export default class CameraExample extends React.Component {
-  constructor (props) {
+import { 
+  Ionicons,
+  MaterialIcons,
+  Foundation,
+  MaterialCommunityIcons,
+  Octicons
+} from '@expo/vector-icons';
+
+const landmarkSize = 2;
+
+const flashModeOrder = {
+  off: 'on',
+  on: 'auto',
+  auto: 'torch',
+  torch: 'off',
+};
+
+const flashIcons = {
+  off: 'flash-off',
+  on: 'flash-on',
+  auto: 'flash-auto',
+  torch: 'highlight'
+};
+
+const wbOrder = {
+  auto: 'sunny',
+  sunny: 'cloudy',
+  cloudy: 'shadow',
+  shadow: 'fluorescent',
+  fluorescent: 'incandescent',
+  incandescent: 'auto',
+};
+
+const wbIcons = {
+  auto: 'wb-auto',
+  sunny: 'wb-sunny',
+  cloudy: 'wb-cloudy',
+  shadow: 'beach-access',
+  fluorescent: 'wb-iridescent',
+  incandescent: 'wb-incandescent',
+};
+
+export default class CameraScreen extends Component {
+  constructor(props) {
     super(props)
     this.state = {
-      hasCameraPermission: null,
-      faceDetecting: false, // when true, we look for faces
-      faceDetected: false, // when true, we've found a face
-      countDownSeconds: 5, // current available seconds before photo is taken
-      countDownStarted: false, // starts when face detected
-      pictureTaken: false, // true when photo has been taken
-      motion: null, // captures the device motion object
-      detectMotion: false // when true we attempt to determine if device is still
-    }
-    this.countDownTimer = null
-    this.detectMotion = this.detectMotion.bind(this)
-    this.onDeviceMotion = this.onDeviceMotion.bind(this)
-    this.detectFaces = this.detectFaces.bind(this)
-    this.handleFaceDetectionError = this.handleFaceDetectionError.bind(this)
-    this.handleFacesDetected = this.handleFacesDetected.bind(this)
-    this.initCountDown = this.initCountDown.bind(this)
-    this.cancelCountDown = this.cancelCountDown.bind(this)
-    this.handleCountDownTime = this.handleCountDownTime.bind(this)
-    this.takePicture = this.takePicture.bind(this)
-    this.onPictureSaved = this.onPictureSaved.bind(this)
-  }
-
-  componentDidMount () {
-    Camera.requestPermissionsAsync().then(({ status }) => this.setState({ hasCameraPermission: status === 'granted' }))
-    this.motionListener = DeviceMotion.addListener((rotation) => this.onDeviceMotion(rotation))
-    setTimeout(() => this.detectMotion(true), 1000)
-  }
-
-  componentDidUpdate (nextProps, nextState) {
-    if (this.state.detectMotion && nextState.motion && this.state.motion) {
-      if (
-        Math.abs(nextState.motion.x - this.state.motion.x) < this.props.motionTolerance &&
-        Math.abs(nextState.motion.y - this.state.motion.y) < this.props.motionTolerance &&
-        Math.abs(nextState.motion.z - this.state.motion.z) < this.props.motionTolerance
-      ) {
-        // still
-        this.detectFaces(true)
-        this.detectMotion(false)
-      } else {
-        // moving
-      }
+      flash: 'off',
+      zoom: 0,
+      autoFocus: 'on',
+      type: 'back',
+      whiteBalance: 'auto',
+      ratio: '16:9',
+      ratios: [],
+      barcodeScanning: false,
+      faceDetecting: false,
+      faces: [],
+      newPhotos: false,
+      permissionsGranted: false,
+      pictureSize: undefined,
+      pictureSizes: [],
+      pictureSizeId: 0,
+      showGallery: false,
+      showMoreOptions: false,
     }
   }
 
-  detectMotion (doDetect) {
-    this.setState({
-      detectMotion: doDetect
-    })
-    if (doDetect) {
-      DeviceMotion.setUpdateInterval(this.props.motionInterval)
-    } else if (!doDetect && this.state.faceDetecting) {
-      this.motionListener.remove()
-    }
+  componentDidMount() {
+    Camera.requestPermissionsAsync().then(({ status }) => this.setState({ permissionsGranted: status === 'granted' }))
+    FileSystem.makeDirectoryAsync(FileSystem.documentDirectory + 'photos').catch(e => {
+      console.log(e, 'Directory exists');
+    });
   }
 
-  onDeviceMotion (rotation) {
-    this.setState({ motion: rotation.accelerationIncludingGravity })
-  }
+  getRatios = async () => {
+    const ratios = await this.camera.getSupportedRatios();
+    return ratios;
+  };
 
-  detectFaces (doDetect) {
-    this.setState({ faceDetecting: doDetect })
-  }
+  toggleView = () => this.setState({ showGallery: !this.state.showGallery, newPhotos: false });
 
-  handleFaceDetectionError () {
-    //
-  }
+  toggleMoreOptions = () => this.setState({ showMoreOptions: !this.state.showMoreOptions });
 
-  handleFacesDetected ({ faces }) {
-    if (faces.length === 1) {
-      this.setState({
-        faceDetected: true
-      })
-      if (!this.state.faceDetected && !this.state.countDownStarted) {
-        this.initCountDown()
-      }
-    } else {
-      this.setState({ faceDetected: false })
-      this.cancelCountDown()
-    }
-  }
+  toggleFacing = () => this.setState({ type: this.state.type === 'back' ? 'front' : 'back' });
 
-  initCountDown () {
-    this.setState({
-      countDownStarted: true
-    })
-    this.countDownTimer = setInterval(this.handleCountDownTime, 1000)
-  }
+  toggleFlash = () => this.setState({ flash: flashModeOrder[this.state.flash] });
 
-  cancelCountDown () {
-    clearInterval(this.countDownTimer)
-    this.setState({
-      countDownSeconds: this.props.countDownSeconds,
-      countDownStarted: false
-    })
-  }
+  setRatio = ratio => this.setState({ ratio });
 
-  handleCountDownTime () {
-    if (this.state.countDownSeconds > 0) {
-      const newSeconds = this.state.countDownSeconds - 1
-      this.setState({
-        countDownSeconds: newSeconds
-      })
-    } else {
-      this.cancelCountDown()
-      this.takePicture()
-    }
-  }
+  toggleWB = () => this.setState({ whiteBalance: wbOrder[this.state.whiteBalance] });
 
-  takePicture () {
-    this.setState({
-      pictureTaken: true
-    })
+  toggleFocus = () => this.setState({ autoFocus: this.state.autoFocus === 'on' ? 'off' : 'on' });
+
+  zoomOut = () => this.setState({ zoom: this.state.zoom - 0.1 < 0 ? 0 : this.state.zoom - 0.1 });
+
+  zoomIn = () => this.setState({ zoom: this.state.zoom + 0.1 > 1 ? 1 : this.state.zoom + 0.1 });
+
+  setFocusDepth = depth => this.setState({ depth });
+
+  toggleBarcodeScanning = () => this.setState({ barcodeScanning: !this.state.barcodeScanning });
+
+  toggleFaceDetection = () => this.setState({ faceDetecting: !this.state.faceDetecting });
+
+  takePicture = () => {
     if (this.camera) {
-      console.log('take picture')
-      this.camera.takePictureAsync({ onPictureSaved: this.onPictureSaved })
+      this.camera.takePictureAsync({ onPictureSaved: this.onPictureSaved });
     }
+  };
+
+  handleMountError = ({ message }) => console.error(message);
+
+  onPictureSaved = async photo => {
+    await FileSystem.moveAsync({
+      from: photo.uri,
+      to: `${FileSystem.documentDirectory}photos/${Date.now()}.jpg`,
+    });
+    this.setState({ newPhotos: true });
   }
 
-  onPictureSaved () {
-    this.detectFaces(false)
+  onBarCodeScanned = code => {
+    this.setState(
+      { barcodeScanning: !this.state.barcodeScanning },
+      Alert.alert(`Barcode found: ${code.data}`)
+    );
+  };
+
+  onFacesDetected = ({ faces }) => this.setState({ faces });
+  onFaceDetectionError = state => console.warn('Faces detection error:', state);
+
+  collectPictureSizes = async () => {
+    if (this.camera) {
+      const pictureSizes = await this.camera.getAvailablePictureSizesAsync(this.state.ratio);
+      let pictureSizeId = 0;
+      if (Platform.OS === 'ios') {
+        pictureSizeId = pictureSizes.indexOf('High');
+      } else {
+        // returned array is sorted in ascending order - default size is the largest one
+        pictureSizeId = pictureSizes.length-1;
+      }
+      this.setState({ pictureSizes, pictureSizeId, pictureSize: pictureSizes[pictureSizeId] });
+    }
+  };
+
+  previousPictureSize = () => this.changePictureSize(1);
+  nextPictureSize = () => this.changePictureSize(-1);
+
+  changePictureSize = direction => {
+    let newId = this.state.pictureSizeId + direction;
+    const length = this.state.pictureSizes.length;
+    if (newId >= length) {
+      newId = 0;
+    } else if (newId < 0) {
+      newId = length -1;
+    }
+    this.setState({ pictureSize: this.state.pictureSizes[newId], pictureSizeId: newId });
   }
 
-  render () {
-    const { hasCameraPermission } = this.state
-    if (hasCameraPermission === null) {
-      return <View />
-    } else if (hasCameraPermission === false) {
-      return <Text>No access to camera</Text>
-    } else {
-      return (
-        <View style={{ flex: 1 }}>
-          <Camera
-            style={{ flex: 1 }}
-            type={Camera.Constants.Type.front}
-            onFacesDetected={(object) => (this.state.faceDetecting ? this.handleFacesDetected(object) : undefined)}
-            onFaceDetectionError={() => this.handleFaceDetectionError()}
-            faceDetectorSettings={{
-              mode: FaceDetector.Constants.Mode.fast,
-              detectLandmarks: FaceDetector.Constants.Mode.none,
-              runClassifications: FaceDetector.Constants.Mode.none
-            }}
-            ref={ref => {
-              this.camera = ref
-            }}
-          >
-            <View
-              style={{
-                flex: 1,
-                backgroundColor: 'transparent',
-                flexDirection: 'row',
-                position: 'absolute',
-                bottom: 0
-              }}
-            >
-              <Text
-                style={styles.textStandard}
-              >
-                {this.state.faceDetected ? 'Face Detected' : 'No Face Detected'}
-              </Text>
-            </View>
-            <View
-              style={{
-                flex: 1,
-                backgroundColor: 'transparent',
-                flexDirection: 'row',
-                width: '100%',
-                height: '100%',
-                justifyContent: 'center',
-                alignItems: 'center',
-                display: this.state.faceDetected && !this.state.pictureTaken ? 'flex' : 'none'
-              }}
-            >
-              <Text
-                style={styles.countdown}
-              >
-                {this.state.countDownSeconds}
-              </Text>
-            </View>
-          </Camera>
+  renderGallery() {
+    return <GalleryScreen onPress={this.toggleView.bind(this)} />;
+  }
+
+  renderFace({ bounds, faceID, rollAngle, yawAngle }) {
+    return (
+      <View
+        key={faceID}
+        transform={[
+          { perspective: 600 },
+          { rotateZ: `${rollAngle.toFixed(0)}deg` },
+          { rotateY: `${yawAngle.toFixed(0)}deg` },
+        ]}
+        style={[
+          styles.face,
+          {
+            ...bounds.size,
+            left: bounds.origin.x,
+            top: bounds.origin.y,
+          },
+        ]}>
+        <Text style={styles.faceText}>ID: {faceID}</Text>
+        <Text style={styles.faceText}>rollAngle: {rollAngle.toFixed(0)}</Text>
+        <Text style={styles.faceText}>yawAngle: {yawAngle.toFixed(0)}</Text>
+      </View>
+    );
+  }
+
+  renderLandmarksOfFace(face) {
+    const renderLandmark = position =>
+      position && (
+        <View
+          style={[
+            styles.landmark,
+            {
+              left: position.x - landmarkSize / 2,
+              top: position.y - landmarkSize / 2,
+            },
+          ]}
+        />
+      );
+    return (
+      <View key={`landmarks-${face.faceID}`}>
+        {renderLandmark(face.leftEyePosition)}
+        {renderLandmark(face.rightEyePosition)}
+        {renderLandmark(face.leftEarPosition)}
+        {renderLandmark(face.rightEarPosition)}
+        {renderLandmark(face.leftCheekPosition)}
+        {renderLandmark(face.rightCheekPosition)}
+        {renderLandmark(face.leftMouthPosition)}
+        {renderLandmark(face.mouthPosition)}
+        {renderLandmark(face.rightMouthPosition)}
+        {renderLandmark(face.noseBasePosition)}
+        {renderLandmark(face.bottomMouthPosition)}
+      </View>
+    );
+  }
+
+  renderFaces = () => 
+    <View style={styles.facesContainer} pointerEvents="none">
+      {this.state.faces.map(this.renderFace)}
+    </View>
+
+  renderLandmarks = () => 
+    <View style={styles.facesContainer} pointerEvents="none">
+      {this.state.faces.map(this.renderLandmarksOfFace)}
+    </View>
+
+  renderNoPermissions = () => 
+    <View style={styles.noPermissions}>
+      <Text style={{ color: 'white' }}>
+        Camera permissions not granted - cannot open camera preview.
+      </Text>
+    </View>
+
+  renderTopBar = () => 
+    <View
+      style={styles.topBar}>
+      <TouchableOpacity style={styles.toggleButton} onPress={this.toggleFacing}>
+        <Ionicons name="ios-reverse-camera" size={32} color="white" />
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.toggleButton} onPress={this.toggleFlash}>
+        <MaterialIcons name={flashIcons[this.state.flash]} size={32} color="white" />
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.toggleButton} onPress={this.toggleWB}>
+        <MaterialIcons name={wbIcons[this.state.whiteBalance]} size={32} color="white" />
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.toggleButton} onPress={this.toggleFocus}>
+        <Text style={[styles.autoFocusLabel, { color: this.state.autoFocus === 'on' ? "white" : "#6b6b6b" }]}>AF</Text>
+      </TouchableOpacity>   
+    </View>
+
+  renderBottomBar = () =>
+    <View
+      style={styles.bottomBar}>
+      <TouchableOpacity style={styles.bottomButton} onPress={this.toggleMoreOptions}>
+        <Octicons name="kebab-horizontal" size={30} color="white"/>
+      </TouchableOpacity>
+      <View style={{ flex: 0.4 }}>
+        <TouchableOpacity
+          onPress={this.takePicture}
+          style={{ alignSelf: 'center' }}
+        >
+          <Ionicons name="ios-radio-button-on" size={70} color="white" />
+        </TouchableOpacity>
+      </View> 
+      <TouchableOpacity style={styles.bottomButton} onPress={this.toggleView}>
+        <View>
+          <Foundation name="thumbnails" size={30} color="white" />
+          {this.state.newPhotos && <View style={styles.newPhotosDot}/>}
         </View>
-      )
-    }
+      </TouchableOpacity>
+    </View>
+
+  renderMoreOptions = () =>
+    (
+      <View style={styles.options}>
+        <View style={styles.detectors}>
+          <TouchableOpacity onPress={this.toggleFaceDetection}>
+            <MaterialIcons name="tag-faces" size={32} color={this.state.faceDetecting ? "white" : "#858585" } />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={this.toggleBarcodeScanning}>
+            <MaterialCommunityIcons name="barcode-scan" size={32} color={this.state.barcodeScanning ? "white" : "#858585" } />
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.pictureSizeContainer}>
+          <Text style={styles.pictureQualityLabel}>Picture quality</Text>
+          <View style={styles.pictureSizeChooser}>
+            <TouchableOpacity onPress={this.previousPictureSize} style={{ padding: 6 }}>
+              <Ionicons name="md-arrow-dropleft" size={14} color="white" />
+            </TouchableOpacity>
+            <View style={styles.pictureSizeLabel}>
+              <Text style={{color: 'white'}}>{this.state.pictureSize}</Text>
+            </View>
+            <TouchableOpacity onPress={this.nextPictureSize} style={{ padding: 6 }}>
+              <Ionicons name="md-arrow-dropright" size={14} color="white" />
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View> 
+    );
+
+  renderCamera = () =>
+    (
+      <View style={{ flex: 1 }}>
+        <Camera
+          ref={ref => {
+            this.camera = ref;
+          }}
+          style={styles.camera}
+          onCameraReady={this.collectPictureSizes}
+          type={this.state.type}
+          flashMode={this.state.flash}
+          autoFocus={this.state.autoFocus}
+          zoom={this.state.zoom}
+          whiteBalance={this.state.whiteBalance}
+          ratio={this.state.ratio}
+          pictureSize={this.state.pictureSize}
+          onMountError={this.handleMountError}
+          onFacesDetected={this.state.faceDetecting ? this.onFacesDetected : undefined}
+          onFaceDetectionError={this.onFaceDetectionError}
+          barCodeScannerSettings={{
+            barCodeTypes: [
+              BarCodeScanner.Constants.BarCodeType.qr,
+              BarCodeScanner.Constants.BarCodeType.pdf417,
+            ],
+          }}
+          onBarCodeScanned={this.state.barcodeScanning ? this.onBarCodeScanned : undefined}
+          >
+          {this.renderTopBar()}
+          {this.renderBottomBar()}
+        </Camera>
+        {this.state.faceDetecting && this.renderFaces()}
+        {this.state.faceDetecting && this.renderLandmarks()}
+        {this.state.showMoreOptions && this.renderMoreOptions()}
+      </View>
+    );
+
+  render() {
+    const cameraScreenContent = this.state.permissionsGranted
+      ? this.renderCamera()
+      : this.renderNoPermissions();
+    const content = this.state.showGallery ? this.renderGallery() : cameraScreenContent;
+    return <View style={styles.container}>{content}</View>;
   }
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: '#000',
+  },
+  camera: {
+    flex: 1,
+    justifyContent: 'space-between',
+  },
+  topBar: {
+    flex: 0.2,
+    backgroundColor: 'transparent',
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    paddingTop: Constants.statusBarHeight / 2,
+  },
+  bottomBar: {
+    paddingBottom: isIPhoneX ? 25 : 5,
+    backgroundColor: 'transparent',
+    alignSelf: 'flex-end',
+    justifyContent: 'space-between',
+    flex: 0.12,
+    flexDirection: 'row',
+  },
+  noPermissions: {
+    flex: 1,
+    alignItems:'center',
+    justifyContent: 'center',
+    padding: 10,
+  },
+  gallery: {
+    flex: 1,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+  },
+  toggleButton: {
+    flex: 0.25,
+    height: 40,
+    marginHorizontal: 2,
+    marginBottom: 10,
+    marginTop: 20,
+    padding: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  autoFocusLabel: {
+    fontSize: 20,
+    fontWeight: 'bold'
+  },
+  bottomButton: {
+    flex: 0.3, 
+    height: 58, 
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  newPhotosDot: {
+    position: 'absolute',
+    top: 0,
+    right: -5,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#4630EB'
+  },
+  options: {
+    position: 'absolute',
+    bottom: 80,
+    left: 30,
+    width: 200,
+    height: 160,
+    backgroundColor: '#000000BA',
+    borderRadius: 4,
+    padding: 10,
+  },
+  detectors: {
+    flex: 0.5,
+    justifyContent: 'space-around',
+    alignItems: 'center',
+    flexDirection: 'row',
+  },
+  pictureQualityLabel: {
+    fontSize: 10,
+    marginVertical: 3, 
+    color: 'white'
+  },
+  pictureSizeContainer: {
+    flex: 0.5,
+    alignItems: 'center',
+    paddingTop: 10,
+  },
+  pictureSizeChooser: {
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    flexDirection: 'row'
+  },
+  pictureSizeLabel: {
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center'
   },
-  textStandard: {
-    fontSize: 18,
-    marginBottom: 10,
-    color: 'white'
+  facesContainer: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    left: 0,
+    top: 0,
   },
-  countdown: {
-    fontSize: 40,
-    color: 'white'
-  }
-})
+  face: {
+    padding: 10,
+    borderWidth: 2,
+    borderRadius: 2,
+    position: 'absolute',
+    borderColor: '#FFD700',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+  },
+  landmark: {
+    width: landmarkSize,
+    height: landmarkSize,
+    position: 'absolute',
+    backgroundColor: 'red',
+  },
+  faceText: {
+    color: '#FFD700',
+    fontWeight: 'bold',
+    textAlign: 'center',
+    margin: 10,
+    backgroundColor: 'transparent',
+  },
+  row: {
+    flexDirection: 'row',
+  },
+});
